@@ -1,0 +1,81 @@
+from dotenv import load_dotenv
+from langchain_groq import ChatGroq
+from langgraph.graph import StateGraph, START, END
+from langchain_community.tools import ArxivQueryRun, WikipediaQueryRun
+from langchain_community.utilities import ArxivAPIWrapper, WikipediaAPIWrapper
+from langchain_community.tools.tavily_search import TavilySearchResults
+from typing_extensions import TypedDict
+from langchain_core.messages import AnyMessage
+from typing import Annotated
+from langgraph.graph.message import add_messages
+from IPython.display import Image, display
+from langgraph.prebuilt import ToolNode, tools_condition
+import os
+ 
+load_dotenv()
+
+os.environ["TAVILY_API_KEY"] = os.getenv("TAVILY_API_KEY")
+os.environ["GROQ_API_KEY"] = os.getenv("GROQ_API_KEY")
+
+# embedding_llm = HuggingFaceEmbeddings(
+#     model_name= "sentence-transformers/all-MiniLM-L6-v2"
+# )
+
+simple_llm  = ChatGroq(
+     model="llama-3.1-8b-instant"
+)
+
+# # embedding_llm = OllamaEmbeddings(
+# #     model="llama3"
+# # )
+
+tavily = TavilySearchResults()
+
+# Tools
+api_wrapper_arxiv = ArxivAPIWrapper(top_k_results=2, doc_content_chars_max= 500)
+arxiv = ArxivQueryRun(api_wrapper=api_wrapper_arxiv, description="Query Arxiv papers")
+
+
+api_wrapper_wikipedia = WikipediaAPIWrapper(top_k_results=2, doc_content_chars_max=500)
+wikipedia = WikipediaQueryRun(api_wrapper=api_wrapper_wikipedia, description="Query Wikipedia")
+
+
+# combine all the tools in the list
+
+all_the_tools = [arxiv, wikipedia, tavily]
+
+llm_with_tools = simple_llm.bind_tools(tools=all_the_tools)
+
+# state schema
+class State(TypedDict):
+    messages : Annotated[list[AnyMessage], add_messages]
+
+
+# node definition
+def tools_calling_llm(state:State):
+    return {"messages":[llm_with_tools.invoke(state["messages"])]}
+
+graph = StateGraph(State)
+
+graph.add_node("tools_calling_llm",tools_calling_llm)
+graph.add_node("tools", ToolNode(all_the_tools))
+
+graph.add_edge(START, "tools_calling_llm")
+graph.add_conditional_edges(
+    "tools_calling_llm",
+     # If the lastest message (result) from assistant is tool call -> tools_condition route to tools
+     # If the lastest message (result) from assistant is not tool call -> tools_condition routes to END 
+     tools_condition, 
+)
+graph.add_edge("tools", "tools_calling_llm")
+
+graph_builder = graph.compile()
+
+# display(Image(graph_builder.get_graph().draw_mermaid_png()))
+
+query = input("Enter the query : ")
+
+agentic_ai_response = graph_builder.invoke({"message":query})
+
+for m in agentic_ai_response['messages']:
+    m.pretty_print()
